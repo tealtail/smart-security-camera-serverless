@@ -1,0 +1,121 @@
+service: smart-security-camera
+
+provider:
+  name: aws
+  runtime: nodejs6.10
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "states:StartExecution"
+      Resource: "*"
+    - Effect: "Allow"
+      Action:
+        - "rekognition:DetectLabels"
+      Resource: "*"
+    - Effect: "Allow"
+      Action:
+        - "s3:PutObject"
+        - "s3:GetObject"
+        - "s3:DeleteObject"
+      Resource: "arn:aws:s3:::${file(./.env.json):BUCKET_NAME}/*"
+    - Effect: "Allow"
+      Action:
+        - "*"
+      Resource: "arn:aws:ses:*:#{AWS::AccountId}:*"
+
+functions:
+  rekognition-image-assessment:
+    handler: functions/rekognition-image-assessment/index.handler
+  rekognition-evaluate-labels:
+    handler: functions/rekognition-evaluate-labels/index.handler
+    environment:
+      ALERT_ON_LABELS: ${file(./.env.json):ALERT_ON_LABELS}
+  nodemailer-send-notification:
+    handler: functions/nodemailer-send-notification/index.handler
+    memorySize: 256
+    environment:
+      EMAIL_FROM: ${file(./.env.json):EMAIL_FROM}
+      EMAIL_RECIPIENT: ${file(./.env.json):EMAIL_RECIPIENT}
+      S3_URL_PREFIX: "https://s3.amazonaws.com/"
+  nodemailer-error-handler:
+    handler: functions/nodemailer-error-handler/index.handler
+    environment:
+      EMAIL_FROM: ${file(./.env.json):EMAIL_FROM}
+      EMAIL_RECIPIENT: ${file(./.env.json):EMAIL_RECIPIENT}
+  s3-archive-image:
+    handler: functions/s3-archive-image/index.handler
+  s3-trigger-image-processing:
+    handler: functions/s3-trigger-image-processing/index.handler
+    events:
+      - s3:
+        bucket: ${file(./.env.json):BUCKET_NAME}
+        event: s3:ObjectCreated:*
+        rules:
+          - prefix: upload/
+    environment:
+      STATE_MACHINE_ARN: ${self:resources.Outputs.StateMachine.Value}
+
+stepFunctions:
+  stateMachines:
+    StepFunctionImageProcessing:
+      name: imageProcessing
+      definition:
+        Comment: "Process incoming image files to find out if an email warning is required"
+        StartAt: RekognitionImageAssessment
+        States:
+          RekognitionImageAssessment:
+            Type: Task
+            Resource: "arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-${opt:stage}-rekognition-image-assessment"
+            Catch:
+            - ErrorEquals:
+              - States.ALL
+              Next: NodeMailerErrorHandler
+            Next: RekognitionEvaluateLabels
+          RekognitionEvaluateLabels:
+            Type: Task
+            Resource: "arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-${opt:stage}-rekognition-evaluate-labels"
+            Catch:
+            - ErrorEquals:
+              - States.ALL
+              Next: NodeMailerErrorHandler
+            Next: MakeAlertDecision
+          MakeAlertDecision:
+            Type: Choice
+            Choices:
+            - Variable: "$.Alert"
+              BooleanEquals: true
+              Next: NodeMailerSendNotification
+            - Variable: "$.Alert"
+              BooleanEquals: false
+              Next: S3ArchiveImage
+          NodeMailerSendNotification:
+            Type: Task
+            Resource: "arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-${opt:stage}-nodemailer-send-notification"
+            Catch:
+            - ErrorEquals:
+              - States.ALL
+              Next: NodeMailerErrorHandler
+            Next: S3ArchiveImage
+          NodeMailerErrorHandler:
+            Type: Task
+            Resource: "arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-${opt:stage}-nodemailer-error-handler"
+            End: true
+          S3ArchiveImage:
+            Type: Task
+            Resource: "arn:aws:lambda:#{AWS::Region}:#{AWS::AccountId}:function:${self:service}-${opt:stage}-s3-archive-image"
+            Catch:
+            - ErrorEquals:
+              - States.ALL
+              Next: NodeMailerErrorHandler
+            End: true
+
+resources:
+  Outputs:
+    StateMachine:
+      Description: "The ARN of the provisioning state machine"
+      Value:
+        Ref: ImageProcessing
+
+plugins:
+  - serverless-step-functions
+  - serverless-pseudo-parameters

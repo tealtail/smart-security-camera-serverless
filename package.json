@@ -1,0 +1,14 @@
+{
+  "name": "security-camera-serverless",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Alicia Lauerman",
+  "devDependencies": {
+    "eslint": "^4.17.0",
+    "eslint-config-cloudreach": "^1.0.0",
+    "serverless-pseudo-parameters": "^1.3.2",
+    "serverless-step-functions": "^1.3.0"
+  }
+}

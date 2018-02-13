@@ -1,0 +1,7 @@
+{
+  "name": "s3-trigger-image-processing",
+  "version": "1.0.0",
+  "dependencies": {
+    "aws-sdk": "^2.193.0"
+  }
+}
